@@ -240,6 +240,44 @@ scan_out_primary_view(struct cg_output *output)
 }
 
 static void
+output_enable(struct cg_output *output)
+{
+	struct wlr_output *wlr_output = output->wlr_output;
+
+	// if (wlr_output->enabled) {
+	//	wlr_log(WLR_DEBUG, "Not enabling already enabled output %s", wlr_output->name);
+	//	return;
+	//}
+
+	wlr_log(WLR_DEBUG, "Enabling output %s", wlr_output->name);
+	struct wlr_output_mode *preferred_mode = wlr_output_preferred_mode(wlr_output);
+	if (preferred_mode) {
+		wlr_output_set_mode(wlr_output, preferred_mode);
+	}
+	wlr_output_set_transform(wlr_output, output->server->output_transform);
+	wlr_output_layout_add_auto(output->server->output_layout, wlr_output);
+	wlr_output_enable(wlr_output, true);
+	wlr_output_commit(wlr_output);
+	wlr_output_damage_add_whole(output->damage);
+}
+
+static void
+output_disable(struct cg_output *output)
+{
+	struct wlr_output *wlr_output = output->wlr_output;
+
+	if (!wlr_output->enabled) {
+		wlr_log(WLR_DEBUG, "Not disabling already disabled output %s", wlr_output->name);
+		return;
+	}
+
+	wlr_log(WLR_DEBUG, "Disabling output %s", wlr_output->name);
+	wlr_output_enable(wlr_output, false);
+	wlr_output_layout_remove(output->server->output_layout, wlr_output);
+	wlr_output_commit(wlr_output);
+}
+
+static void
 damage_surface_iterator(struct cg_output *output, struct wlr_surface *surface, struct wlr_box *box, void *user_data)
 {
 	struct wlr_output *wlr_output = output->wlr_output;
@@ -270,6 +308,11 @@ damage_surface_iterator(struct cg_output *output, struct wlr_surface *surface, s
 void
 output_damage_surface(struct cg_output *output, struct wlr_surface *surface, double lx, double ly, bool whole)
 {
+	if (!output->wlr_output->enabled) {
+		wlr_log(WLR_DEBUG, "Not adding damage for disabled output %s", output->wlr_output->name);
+		return;
+	}
+
 	double ox = lx, oy = ly;
 	wlr_output_layout_output_coords(output->server->output_layout, output->wlr_output, &ox, &oy);
 	output_surface_for_each_surface(output, surface, ox, oy, damage_surface_iterator, &whole);
@@ -368,15 +411,20 @@ output_destroy(struct cg_output *output)
 
 	wlr_output_layout_remove(server->output_layout, output->wlr_output);
 
-	struct cg_view *view;
-	wl_list_for_each (view, &output->server->views, link) {
-		view_position(view);
-	}
-
 	free(output);
 
 	if (wl_list_empty(&server->outputs)) {
 		wl_display_terminate(server->wl_display);
+	} else {
+		struct cg_output *prev = wl_container_of(server->outputs.next, prev, link);
+		if (prev) {
+			output_enable(prev);
+
+			struct cg_view *view;
+			wl_list_for_each (view, &server->views, link) {
+				view_position(view);
+			}
+		}
 	}
 }
 
@@ -423,16 +471,9 @@ handle_new_output(struct wl_listener *listener, void *data)
 	output->damage_destroy.notify = handle_output_damage_destroy;
 	wl_signal_add(&output->damage->events.destroy, &output->damage_destroy);
 
-	struct wlr_output_mode *preferred_mode = wlr_output_preferred_mode(wlr_output);
-	if (preferred_mode) {
-		wlr_output_set_mode(wlr_output, preferred_mode);
-	}
-	wlr_output_set_transform(wlr_output, server->output_transform);
-	wlr_output_layout_add_auto(server->output_layout, wlr_output);
-
-	struct cg_view *view;
-	wl_list_for_each (view, &output->server->views, link) {
-		view_position(view);
+	struct cg_output *next = wl_container_of(output->link.next, next, link);
+	if (next) {
+		output_disable(next);
 	}
 
 	if (wlr_xcursor_manager_load(server->seat->xcursor_manager, wlr_output->scale)) {
@@ -440,16 +481,23 @@ handle_new_output(struct wl_listener *listener, void *data)
 			wlr_output->scale);
 	}
 
-	wlr_output_enable(wlr_output, true);
-	wlr_output_commit(wlr_output);
+	output_enable(output);
 
-	wlr_output_damage_add_whole(output->damage);
+	struct cg_view *view;
+	wl_list_for_each (view, &output->server->views, link) {
+		view_position(view);
+	}
 }
 
 void
 output_set_window_title(struct cg_output *output, const char *title)
 {
 	struct wlr_output *wlr_output = output->wlr_output;
+
+	if (!wlr_output->enabled) {
+		wlr_log(WLR_DEBUG, "Not setting window title for disabled output %s", wlr_output->name);
+		return;
+	}
 
 	if (wlr_output_is_wl(wlr_output)) {
 		wlr_wl_output_set_title(wlr_output, title);

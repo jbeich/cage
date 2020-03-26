@@ -27,7 +27,9 @@ struct cg_server {
 	struct wl_list inhibitors;
 
 	struct wlr_output_layout *output_layout;
-	struct wl_list outputs;
+	/* Includes disabled outputs; only the last added output
+	 * (i.e., the first element in the list) should be enabled. */
+	struct wl_list outputs; // cg_output::link
 	struct wl_listener new_output;
 
 	struct wl_listener xdg_toplevel_decoration;
